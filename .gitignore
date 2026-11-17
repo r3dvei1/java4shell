@@ -1,0 +1,10 @@
+# build output
+*.class
+*.jar
+out/
+# editor
+.idea/
+.vscode/
+# os
+.DS_Store
+Thumbs.db

